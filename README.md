@@ -3,7 +3,8 @@
 
 Simple binder design pipeline using AlphaFold2 backpropagation, MPNN, and PyRosetta. Select your target and let the script do the rest of the work and finish once you have enough designs to order!
 
-## When you run BindCraft in linux OS
+## How to get this UI? 
+simply replace your bindcraft.py using this repo
 ![alt text](https://github.com/ullahsamee/BindCraft/blob/main/ui.gif?raw=true)
 
 [Preprint link for BindCraft](https://www.biorxiv.org/content/10.1101/2024.09.30.615802)

@@ -3,6 +3,15 @@
 ####################################
 ### Import dependencies
 from functions import *
+import io
+from contextlib import redirect_stdout
+
+# Rich library for professional styling
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
+from rich.table import Table
+import rich.box
 
 # Check if JAX-capable GPU is available, otherwise exit
 check_jax_gpu()
@@ -25,6 +34,37 @@ settings_path, filters_path, advanced_path = perform_input_check(args)
 
 ### load settings from JSON
 target_settings, advanced_settings, filters = load_json_settings(settings_path, filters_path, advanced_path)
+
+####################################
+################### Settings Monitor
+####################################
+# Initialize console here to be used by all rich elements
+console = Console()
+
+# Create a Text object with all the settings, preserving the alignment
+settings_text = Text(
+    f"design_path             ---> {target_settings['design_path']}\n"
+    f"binder_name             ---> {target_settings['binder_name']}\n"
+    f"starting_pdb file name  ---> {os.path.basename(target_settings['starting_pdb'])}\n"
+    f"chains                  ---> {target_settings['chains']}\n"
+    f"target_hotspot_residues ---> {target_settings['target_hotspot_residues']}\n"
+    f"lengths                 ---> {target_settings['lengths']}\n"
+    f"number_of_final_designs ---> {target_settings['number_of_final_designs']}"
+)
+
+# Print the settings inside a styled panel
+console.print(
+    Panel(
+        settings_text,
+        title="[bold white]Your Input Settings[/bold white]",
+        border_style="blue",
+        expand=False,
+        padding=(1, 2)
+    )
+)
+console.print() # Add a newline for spacing
+####################################
+####################################
 
 settings_file = os.path.basename(settings_path).split('.')[0]
 filters_file = os.path.basename(filters_path).split('.')[0]
@@ -56,11 +96,52 @@ generate_filter_pass_csv(failure_csv, args.filters)
 ####################################
 ####################################
 ####################################
+### Print custom banner
+# Define styled content for the banner by appending lines to a single Text object
+banner_content = Text("BindCraft v1.5.2", style="bold bright_cyan", justify="center")
+banner_content.append("\nOne-shot Design of Functional Protein Binders", style="bold italic green")
+banner_content.append("\n\nIf you use BindCraft in your research, please cite:\n", style="default")
+banner_content.append(
+    Text.assemble(
+        Text(
+            "Pacesa, M., Nickel, L., Schellhaas, C., Schmidt, J., Pyatova, E., Kissling, L., Barendse, P., Choudhury, J., Kapoor, S., Alcaraz-Serna, A., Cho, Y., Ghamary, K. H., Vinué, L., Yachnin, B. J., Wollacott, A. M., Buckley, S., Westphal, A. H., Lindhoud, S., Georgeon, S., . . . Correia, B. E.", "dim"
+        ),
+        ("BindCraft: one-shot design of functional protein binders. bioRxiv (Cold Spring Harbor Laboratory). https://doi.org/10.1101/2024.09.30.615802", "dim")
+    )
+)
+
+
+# Print content inside a styled panel
+console.print(
+    Panel(
+        banner_content,
+        title="[bold white]Initialization[/bold white]",
+        border_style="blue",
+        expand=False,
+        padding=(1, 2)
+    )
+)
+console.print() # Add a newline for spacing
+
 ### initialise PyRosetta
-pr.init(f'-ignore_unrecognized_res -ignore_zero_occupancy -mute all -holes:dalphaball {advanced_settings["dalphaball_path"]} -corrections::beta_nov16 true -relax:default_repeats 1')
-print(f"Running binder design for target {settings_file}")
-print(f"Design settings used: {advanced_file}")
-print(f"Filtering designs based on {filters_file}")
+pr.init(f'-ignore_unrecognized_res -ignore_zero_occupancy -mute all -holes:dalphaball {advanced_settings["dalphaball_path"]} -corrections::beta_nov16 true -relax:default_repeats 1', silent=True)
+
+# NEW: Display run configuration in a panel
+run_info_text = Text(
+    f"Target: {settings_file}\n"
+    f"Design Settings: {advanced_file}\n"
+    f"Filter Settings: {filters_file}",
+    justify="center"
+)
+console.print(
+    Panel(
+        run_info_text,
+        title="[bold white]Run Configuration[/bold white]",
+        border_style="green",
+    )
+)
+console.print()
+
 
 ####################################
 # initialise counters
@@ -103,12 +184,23 @@ while True:
     trajectory_exists = any(os.path.exists(os.path.join(design_paths[trajectory_dir], design_name + ".pdb")) for trajectory_dir in trajectory_dirs)
 
     if not trajectory_exists:
-        print("Starting trajectory: "+design_name)
+        # console.print(f"Starting trajectory: [bold cyan]{design_name}[/bold cyan]")
+        log_buffer = io.StringIO()
 
         ### Begin binder hallucination
-        trajectory = binder_hallucination(design_name, target_settings["starting_pdb"], target_settings["chains"],
-                                            target_settings["target_hotspot_residues"], length, seed, helicity_value,
-                                            design_models, advanced_settings, design_paths, failure_csv)
+        # NEW: Use a status spinner and redirect verbose logs to a buffer
+        with console.status(f"[bold green]Designing trajectory {design_name}...", spinner="dots") as status:
+            with redirect_stdout(log_buffer):
+                trajectory = binder_hallucination(design_name, target_settings["starting_pdb"], target_settings["chains"],
+                                                    target_settings["target_hotspot_residues"], length, seed, helicity_value,
+                                                    design_models, advanced_settings, design_paths, failure_csv)
+        
+        # Save the captured log to a file for debugging
+        hallucination_log = log_buffer.getvalue()
+        log_filepath = os.path.join(design_paths["Trajectory"], f"{design_name}.log")
+        with open(log_filepath, "w") as log_file:
+            log_file.write(hallucination_log)
+
         trajectory_metrics = copy_dict(trajectory._tmp["best"]["aux"]["log"]) # contains plddt, ptm, i_ptm, pae, i_pae
         trajectory_pdb = os.path.join(design_paths["Trajectory"], design_name + ".pdb")
 
@@ -118,9 +210,7 @@ while True:
         # time trajectory
         trajectory_time = time.time() - trajectory_start_time
         trajectory_time_text = f"{'%d hours, %d minutes, %d seconds' % (int(trajectory_time // 3600), int((trajectory_time % 3600) // 60), int(trajectory_time % 60))}"
-        print("Starting trajectory took: "+trajectory_time_text)
-        print("")
-
+        
         # Proceed if there is no trajectory termination signal
         if trajectory.aux["log"]["terminate"] == "":
             # Relax binder to calculate statistics
@@ -139,6 +229,18 @@ while True:
 
             # analyze interface scores for relaxed af2 trajectory
             trajectory_interface_scores, trajectory_interface_AA, trajectory_interface_residues = score_interface(trajectory_relaxed, binder_chain)
+            
+            # NEW: Print a summary table for the trajectory
+            summary_table = Table(title=f"Trajectory [bold cyan]{design_name}[/bold cyan] Initial Results", show_header=True, header_style="bold magenta", box=rich.box.ROUNDED)
+            summary_table.add_column("Metric", style="cyan")
+            summary_table.add_column("Value")
+            summary_table.add_row("pLDDT", f"{trajectory_metrics.get('plddt', 'N/A'):.2f}")
+            summary_table.add_row("Interface pTM", f"{trajectory_metrics.get('i_ptm', 'N/A'):.2f}")
+            summary_table.add_row("Interface Clashes (Relaxed)", str(num_clashes_relaxed))
+            summary_table.add_row("Interface dG", f"{trajectory_interface_scores.get('interface_dG', 'N/A'):.2f}")
+            summary_table.add_row("Design Time", trajectory_time_text)
+            console.print(summary_table)
+            console.print()
 
             # starting binder sequence
             trajectory_sequence = trajectory.get_seq(get_best=True)[0]
@@ -160,10 +262,6 @@ while True:
                                 trajectory_alpha_interface, trajectory_beta_interface, trajectory_loops_interface, trajectory_alpha, trajectory_beta, trajectory_loops, trajectory_interface_AA, trajectory_target_rmsd, 
                                 trajectory_time_text, traj_seq_notes, settings_file, filters_file, advanced_file]
             insert_data(trajectory_csv, trajectory_data)
-
-            if not trajectory_interface_residues:
-                print("No interface residues found for "+str(design_name)+", skipping MPNN optimization")
-                continue
             
             if advanced_settings["enable_mpnn"]:
                 # initialise MPNN counters
@@ -240,7 +338,7 @@ while True:
 
                         # if AF2 filters are not passed then skip the scoring
                         if not pass_af2_filters:
-                            print(f"Base AF2 filters not passed for {mpnn_design_name}, skipping interface scoring")
+                            console.print(f"Skipping interface scoring for {mpnn_design_name} (failed base AF2 filters).")
                             mpnn_n += 1
                             continue
 
@@ -376,7 +474,7 @@ while True:
                         # run design data against filter thresholds
                         filter_conditions = check_filters(mpnn_data, design_labels, filters)
                         if filter_conditions == True:
-                            print(mpnn_design_name+" passed all filters")
+                            console.print(f":heavy_check_mark: [bold green]SUCCESS: {mpnn_design_name} passed all filters.[/bold green]")
                             accepted_mpnn += 1
                             accepted_designs += 1
                             
@@ -403,7 +501,7 @@ while True:
                                     shutil.copy(source_plot, target_plot)
 
                         else:
-                            print(f"Unmet filter conditions for {mpnn_design_name}")
+                            console.print(f":x: [bold yellow]REJECTED: {mpnn_design_name} failed filter checks.[/bold yellow]")
                             failure_df = pd.read_csv(failure_csv)
                             special_prefixes = ('Average_', '1_', '2_', '3_', '4_', '5_')
                             incremented_columns = set()
@@ -429,15 +527,12 @@ while True:
                             break
 
                     if accepted_mpnn >= 1:
-                        print("Found "+str(accepted_mpnn)+" MPNN designs passing filters")
-                        print("")
+                        console.print(f"\n[bold green]Found {accepted_mpnn} valid MPNN designs for this trajectory.[/bold green]\n")
                     else:
-                        print("No accepted MPNN designs found for this trajectory.")
-                        print("")
+                        console.print("\n[yellow]No accepted MPNN designs found for this trajectory.[/yellow]\n")
 
                 else:
-                    print('Duplicate MPNN designs sampled with different trajectory, skipping current trajectory optimisation')
-                    print("")
+                    console.print('[yellow]Duplicate or invalid MPNN designs sampled, skipping current trajectory optimization.[/yellow]\n')
 
                 # save space by removing unrelaxed design trajectory PDB
                 if advanced_settings["remove_unrelaxed_trajectory"]:
@@ -446,14 +541,16 @@ while True:
                 # measure time it took to generate designs for one trajectory
                 design_time = time.time() - design_start_time
                 design_time_text = f"{'%d hours, %d minutes, %d seconds' % (int(design_time // 3600), int((design_time % 3600) // 60), int(design_time % 60))}"
-                print("Design and validation of trajectory "+design_name+" took: "+design_time_text)
+                console.print(f"Design and validation of trajectory {design_name} took: [bold]{design_time_text}[/bold]")
+                console.print("-" * 50)
+
 
             # analyse the rejection rate of trajectories to see if we need to readjust the design weights
             if trajectory_n >= advanced_settings["start_monitoring"] and advanced_settings["enable_rejection_check"]:
                 acceptance = accepted_designs / trajectory_n
                 if not acceptance >= advanced_settings["acceptance_rate"]:
-                    print("The ratio of successful designs is lower than defined acceptance rate! Consider changing your design settings!")
-                    print("Script execution stopping...")
+                    console.print(f"[bold red]ACCEPTANCE RATE WARNING: The ratio of successful designs ({acceptance:.2%}) is lower than the target ({advanced_settings['acceptance_rate']:.2%}).[/bold red]")
+                    console.print("[bold red]Consider changing your design settings. Stopping script execution.[/bold red]")
                     break
 
         # increase trajectory number
@@ -463,4 +560,10 @@ while True:
 ### Script finished
 elapsed_time = time.time() - script_start_time
 elapsed_text = f"{'%d hours, %d minutes, %d seconds' % (int(elapsed_time // 3600), int((elapsed_time % 3600) // 60), int(elapsed_time % 60))}"
-print("Finished all designs. Script execution for "+str(trajectory_n)+" trajectories took: "+elapsed_text)
+console.print(
+    Panel(
+        f"Script finished after generating [bold]{trajectory_n-1}[/bold] trajectories.\nTotal execution time: [bold green]{elapsed_text}[/bold green]",
+        title="[bold white]Run Complete[/bold white]",
+        border_style="green"
+    )
+)
